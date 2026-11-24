@@ -1,0 +1,126 @@
+import pandas as pd
+from dotenv import load_dotenv
+
+from config.config import config
+from config.log_config import get_logger
+from pipeline.base_db_connection import BaseDBConnection
+
+logger = get_logger(__name__)
+
+
+# TODO:
+# - Implement the logic to load data into PostgreSQL
+# - Add error handling for database connections and data loading
+# - Checking for empty DataFrames before loading
+# - Ensure the schema exists before loading data
+
+
+class DataLoader(BaseDBConnection):
+    def __init__(self, source: str, *, dataframe_table_mapping: dict, schema: str):
+        """Initialize the DataLoader with configuration and source.
+        **Make sure you have created the schema in the target database before loading data.**
+
+        Args:
+            source (str): The source of the data, e.g., 'postgres', 'snowflake'.
+            dataframe (pd.DataFrame | list): The DataFrame or list of DataFrames containing the data to be loaded.
+            dataframe_table_mapping (dict): A mapping of DataFrame names to target table.
+                the keys are the dataframe and the values are the table names.
+                    {table_name: dataframe}
+        """
+
+        load_dotenv()
+
+        if source not in ['postgres', 'snowflake', 'CSV']:
+            raise ValueError("Unsupported source type. Supported types are: 'postgres', 'snowflake', 'CSV'.")
+        self.source = source
+        self.dataframe_table_mapping = dataframe_table_mapping
+        self.schema = schema
+        self.connector = None
+
+    def _postgres_load_data(self):
+        """Load data into PostgreSQL."""
+
+        try:
+            if self.connector is None:
+                self.connector = self._connection()
+                logger.info("Connected to PostgreSQL successfully.")
+
+            for table_name, df in self.dataframe_table_mapping.items():
+                df.to_sql(
+                    table_name,
+                    con=self.connector,
+                    schema=self.schema,
+                    if_exists='append',
+                    index=False,
+                    chunksize=config['CHUNK_SIZE']
+                )
+                logger.info(f"Data loaded into {table_name} table in PostgreSQL.")
+        except Exception as e:
+            logger.error(f"Error loading data into PostgreSQL: {e}")
+            self._close_connection()
+            raise
+
+    def _snowflake_load_data(self):
+        """Load data into snowflake."""
+
+        try:
+            if self.connector is None:
+                self.connector = self._connection()
+                logger.info("Connected to Snowflake successfully.")
+
+            for table_name, df in self.dataframe_table_mapping.items():
+                logger.info(f"Loading data into {table_name} table in Snowflake.")
+                df.to_sql(
+                    table_name,
+                    con=self.connector,
+                    schema=self.schema,
+                    if_exists='append',
+                    index=False,
+                    chunksize=config['CHUNK_SIZE']
+                )
+                logger.info(f"Data loaded into {table_name} table in snowflake.")
+        except Exception as e:
+            logger.error(f"Error loading data into Snowflake: {e}")
+            self._close_connection()
+            raise
+
+    def _csv_load_data(self, directory= config['CLEANED_DATA_DIR']):
+        """Load data from CSV files into the target database."""
+        for table_name, df in self.dataframe_table_mapping.items():
+            df.to_csv(f"{directory}/{table_name}.csv", index=False)
+            logger.info(f"Data saved to {table_name}.csv in {directory} directory.")
+
+    def load_data(self):
+        """Load data into the target database."""
+
+        if self.source == 'snowflake':
+            self._snowflake_load_data()
+
+        elif self.source == 'postgres':
+            self._postgres_load_data()
+
+        elif self.source == 'CSV':
+            self._csv_load_data()
+
+        else:
+            raise ValueError("Unsupported source type")
+
+        self._close_connection()
+        return self
+
+
+if __name__ == "__main__":
+    # Example: Load multiple Olist tables
+    df_mapping = {
+        'temp_test': pd.read_csv('data/raw/olist_orders_dataset.csv').head(),
+    }
+
+    loader = DataLoader(
+        source='snowflake',
+        dataframe_table_mapping=df_mapping,
+        schema='test'
+    )
+
+    loader.load_data()
+
+    loader._csv_load_data()
